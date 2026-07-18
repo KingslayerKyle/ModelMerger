@@ -133,9 +133,12 @@ namespace ModelMerger
         {
             var model = new Model(Path.GetFileNameWithoutExtension(filePath));
             var CastFile = Cast.CastFile.Load(filePath);
-            var Model = CastFile.RootNodes[0].ChildrenOfType<Cast.Model>().FirstOrDefault();
+            var Model = CastFile.RootNodes.Count > 0 ? CastFile.RootNodes[0].ChildrenOfType<Cast.Model>().FirstOrDefault() : null;
+
+            if (Model == null)
+                throw new Exception(string.Format("{0} does not contain a model", Path.GetFileName(filePath)));
+
             var Skeleton = Model.Skeleton();
-            var BoneCount = (uint)Skeleton.ChildNodes.Count;
             var Mats = Model.ChildrenOfType<Cast.Material>();
 
             Printer.WriteLine("LOADER", string.Format("Loading {0}", Path.GetFileName(filePath)));
@@ -145,7 +148,9 @@ namespace ModelMerger
                 model.Shapes.Add(blend.Name());
             }
 
-            foreach (var bone in Skeleton.Bones())
+            var SkeletonBones = Skeleton != null ? Skeleton.Bones() : new List<Cast.Bone>();
+
+            foreach (var bone in SkeletonBones)
             {
                 var boneLocPos = bone.LocalPosition();
                 var boneLocRot = bone.LocalRotation();
@@ -160,7 +165,6 @@ namespace ModelMerger
                     new Quaternion(boneGlobalRot.X, boneGlobalRot.Y, boneGlobalRot.Z, boneGlobalRot.W)));
             }
 
-            var ShapeIndex = 0;
             foreach(var CastMesh in Model.Meshes())
             {
                 var mesh = new Model.Mesh(CastMesh.VertexCount(), CastMesh.FaceCount());
@@ -170,14 +174,15 @@ namespace ModelMerger
                 var WeightBoneBuffer = CastMesh.VertexWeightBoneBuffer().ToArray();
                 var WeightValueBuffer = CastMesh.VertexWeightValueBuffer().ToArray();
                 var FaceBuffer = CastMesh.FaceBuffer().ToArray();
-                var UVBuffer = CastMesh.VertexUVLayerBuffer(0).ToArray();
+                var UVBuffer = CastMesh.UVLayerCount() > 0 ? CastMesh.VertexUVLayerBuffer(0).ToArray() : new Cast.Vector2[0];
+                var ColorBuffer = CastMesh.VertexColorBuffer().ToArray();
 
-                mesh.MaterialIndices.Add(Mats.IndexOf(CastMesh.Material()));
+                var MaterialIndex = Mats.IndexOf(CastMesh.Material());
+
+                if (MaterialIndex > -1)
+                    mesh.MaterialIndices.Add(MaterialIndex);
 
                 var BlendsForMesh = Model.BlendShapes().FindAll(x => x.BaseShape() == CastMesh);
-
-                var BlendWeight = new Cast.Vector3[0];
-                var BlendIndices = new int[0];
 
                 for (int i = 0; i < CastMesh.VertexCount(); i++)
                 {
@@ -185,33 +190,46 @@ namespace ModelMerger
                         new Vector3(VertexBuffer[i].X, VertexBuffer[i].Y, VertexBuffer[i].Z),
                         new Vector3(NormalBuffer[i].X, NormalBuffer[i].Y, NormalBuffer[i].Z));
 
-                    vert.UVs.Add(new Vector2(UVBuffer[i].X, UVBuffer[i].Y));
+                    vert.UVs.Add(i < UVBuffer.Length ? new Vector2(UVBuffer[i].X, UVBuffer[i].Y) : new Vector2(0, 0));
                     int weightStartIndex = i * CastMesh.MaximumWeightInfluence();
                     for (int j = 0; j < CastMesh.MaximumWeightInfluence(); j++)
                     {
                         var weight = new Model.Vertex.Weight(WeightBoneBuffer[weightStartIndex + j], WeightValueBuffer[weightStartIndex + j]);
-                        //Console.WriteLine($"{WeightBoneBuffer[weightStartIndex + j]} {WeightValueBuffer[weightStartIndex + j]}");
                         vert.Weights.Add(weight);
                     }
-                    vert.Color = new Vector4(1, 1, 1, 1);
+
+                    if (i < ColorBuffer.Length)
+                    {
+                        vert.Color = new Vector4(
+                            (ColorBuffer[i] & 0xFF) / 255.0f,
+                            ((ColorBuffer[i] >> 8) & 0xFF) / 255.0f,
+                            ((ColorBuffer[i] >> 16) & 0xFF) / 255.0f,
+                            ((ColorBuffer[i] >> 24) & 0xFF) / 255.0f);
+                    }
+                    else
+                    {
+                        vert.Color = new Vector4(1, 1, 1, 1);
+                    }
 
                     mesh.Vertices.Add(vert);
                 }
 
-                if (BlendsForMesh.Count > 0)
+                foreach (var BlendForMesh in BlendsForMesh)
                 {
-                    foreach (var BlendForMesh in BlendsForMesh)
-                    {
-                        BlendWeight = BlendForMesh.TargetShapeVertexPositions().ToArray();
-                        BlendIndices = BlendForMesh.TargetShapeVertexIndices().ToArray();
+                    var BlendPositions = BlendForMesh.TargetShapeVertexPositions().ToArray();
+                    var BlendIndices = BlendForMesh.TargetShapeVertexIndices().ToArray();
+                    var index = model.Shapes.IndexOf(BlendForMesh.Name());
 
-                        for (int i = 0; i < BlendIndices.Length; i++)
-                        {
-                            var index = model.Shapes.IndexOf(BlendForMesh.Name());
-                            var currentVertex = mesh.Vertices[BlendIndices[i]];
-                            var DeltaVector = new Vector3(currentVertex.Position.X - BlendWeight[i].X, currentVertex.Position.Y - BlendWeight[i].Y, currentVertex.Position.Z - BlendWeight[i].Z);
-                            currentVertex.Shapes.Add(new Model.Vertex.Shape(index, new Vector3(BlendWeight[i].X, BlendWeight[i].Y, BlendWeight[i].Z)));
-                        }
+                    for (int i = 0; i < BlendIndices.Length; i++)
+                    {
+                        // Cast stores absolute target positions, internally we keep
+                        // deltas (SEModel convention) so merging can rotate them and
+                        // each writer can produce its own convention from one source
+                        var currentVertex = mesh.Vertices[BlendIndices[i]];
+                        currentVertex.Shapes.Add(new Model.Vertex.Shape(index, new Vector3(
+                            BlendPositions[i].X - currentVertex.Position.X,
+                            BlendPositions[i].Y - currentVertex.Position.Y,
+                            BlendPositions[i].Z - currentVertex.Position.Z)));
                     }
                 }
 
@@ -221,7 +239,6 @@ namespace ModelMerger
                 }
 
                 model.Meshes.Add(mesh);
-                ShapeIndex++;
             }
 
             foreach (var material in Model.Materials())
@@ -248,7 +265,6 @@ namespace ModelMerger
             }
         }
 
-        //TODO: Verify that the files are of the same type?
         static List<Model> LoadModels(string[] args)
         {
             var fileNames = args.ToList();
@@ -258,18 +274,12 @@ namespace ModelMerger
 
             foreach(var fileName in fileNames)
             {
-                switch(Path.GetExtension(fileName).ToLower())
-                {
-                    case ".semodel":
-                        models.Add(LoadSEModel(fileName));
-                        break;
-                    case ".cast":
-                        models.Add(LoadCastModel(fileName));
-                        break;
-                    default:
-                        Printer.WriteLine("ERROR", string.Format("Invalid file: ", Path.GetFileNameWithoutExtension(fileName)), ConsoleColor.Red);
-                        break;
-                }
+                var model = LoadModel(fileName);
+
+                if (model != null)
+                    models.Add(model);
+                else
+                    Printer.WriteLine("ERROR", string.Format("Invalid file: {0}", Path.GetFileName(fileName)), ConsoleColor.Red);
             }
 
             return models;
@@ -292,6 +302,128 @@ namespace ModelMerger
             }
 
             return false;
+        }
+
+        static void MergeModel(Model rootModel, Model model, Logger logger)
+        {
+            Printer.WriteLine("MERGER", string.Format("Merging {0}", model.Name));
+            logger.Write(string.Format("Merging {0}", model.Name), Logger.MessageType.INFO);
+
+            // Add missing bones in two passes so parent resolution never
+            // depends on the order the source model stored its bones in:
+            // add everything first, resolve parents by name after
+            var boneLookup = new Dictionary<string, int>();
+
+            for (int i = 0; i < rootModel.Bones.Count; i++)
+                boneLookup.TryAdd(rootModel.Bones[i].Name, i);
+
+            var addedBones = new List<(Model.Bone Source, Model.Bone New)>();
+
+            foreach (var bone in model.Bones)
+            {
+                if (!boneLookup.ContainsKey(bone.Name))
+                {
+                    var nBone = new Model.Bone(bone.Name, -1, bone.LocalPosition, bone.LocalRotation);
+                    rootModel.Bones.Add(nBone);
+                    boneLookup[bone.Name] = rootModel.Bones.Count - 1;
+                    addedBones.Add((bone, nBone));
+                }
+            }
+
+            foreach (var (source, nBone) in addedBones)
+            {
+                if (source.ParentIndex > -1)
+                    nBone.ParentIndex = boneLookup.TryGetValue(model.Bones[source.ParentIndex].Name, out var parentIndex) ? parentIndex : -1;
+            }
+
+            foreach (var shape in model.Shapes)
+            {
+                if (!rootModel.Shapes.Contains(shape))
+                {
+                    rootModel.Shapes.Add(shape);
+                }
+            }
+
+            // Compute global positions (we need them for offsetting)
+            rootModel.GenerateGlobalBoneData();
+            model.GenerateGlobalBoneData();
+
+            // Get root and the new root, to compute offsets
+            // TODO: compute this for each bone and utilize weights
+            // but as an option, as it may cause severe deformations
+            // if bones have moved
+            var translation = new Vector3(0, 0, 0);
+            var rotation = new Quaternion(0, 0, 0, 1).ToMatrix();
+
+            if (model.Bones.Count > 0)
+            {
+                var root = model.Bones[0];
+                var nRoot = rootModel.Bones[boneLookup[root.Name]];
+
+                translation = nRoot.GlobalPosition - root.GlobalPosition;
+                rotation = (nRoot.GlobalRotation * root.GlobalRotation.Inverse()).ToMatrix();
+            }
+
+            foreach (var material in model.Materials)
+            {
+                if (rootModel.Materials.Find(x => x.Name == material.Name) == null)
+                {
+                    rootModel.Materials.Add(material);
+                }
+            }
+
+            // Resolve every index remap once, per-vertex lookups by name
+            // made big merges crawl
+            var boneRemap = model.Bones.Select(x => boneLookup[x.Name]).ToArray();
+            var shapeRemap = model.Shapes.Select(x => rootModel.Shapes.IndexOf(x)).ToArray();
+            var materialRemap = model.Materials.Select(m => rootModel.Materials.FindIndex(x => x.Name == m.Name)).ToArray();
+
+            foreach (var mesh in model.Meshes)
+            {
+                var nMesh = new Model.Mesh(mesh.Vertices.Count, 0)
+                {
+                    Faces = new List<Model.Face>(mesh.Faces)
+                };
+
+                foreach (var material in mesh.MaterialIndices)
+                {
+                    nMesh.MaterialIndices.Add(materialRemap[material]);
+                }
+
+                foreach (var vertex in mesh.Vertices)
+                {
+                    var nVertex = new Model.Vertex(vertex.Position, vertex.Normal, vertex.Tangent)
+                    {
+                        Color = vertex.Color,
+                        Weights = new List<Model.Vertex.Weight>(vertex.Weights.Count),
+                        UVs = new List<Vector2>(vertex.UVs)
+                    };
+
+                    foreach (var weight in vertex.Weights)
+                    {
+                        nVertex.Weights.Add(new Model.Vertex.Weight(boneRemap[weight.BoneIndex], weight.Influence));
+                    }
+
+                    foreach (var shape in vertex.Shapes)
+                    {
+                        nVertex.Shapes.Add(new Model.Vertex.Shape(
+                            shapeRemap[shape.ShapeIndex],
+                            rotation.TransformVector(shape.Delta)));
+                    }
+
+                    // Now move it to the new position
+                    nVertex.Position = rotation.TransformVector(vertex.Position);
+                    nVertex.Normal = rotation.TransformVector(vertex.Normal);
+                    nVertex.Position += translation;
+
+                    nMesh.Vertices.Add(nVertex);
+                }
+
+                rootModel.Meshes.Add(nMesh);
+            }
+
+            Printer.WriteLine("MERGER", string.Format("Merged {0}", model.Name));
+            logger.Write(string.Format("Merged {0}", model.Name), Logger.MessageType.INFO);
         }
 
         static Model GetRootModel(List<Model> models)
@@ -350,119 +482,46 @@ namespace ModelMerger
                         rootModel
                     };
 
-                    var outputFolder = Path.Combine(Path.GetDirectoryName(AppContext.BaseDirectory), "Merged Models");
+                    // Save next to the dropped files rather than next to the exe,
+                    // the exe may live somewhere the user can't write to
+                    var firstInput = args.FirstOrDefault(File.Exists);
+                    var outputFolder = Path.Combine(
+                        firstInput != null ? Path.GetDirectoryName(Path.GetFullPath(firstInput)) : Path.GetDirectoryName(AppContext.BaseDirectory),
+                        "Merged Models");
 
                     // Keep looping until we've resolved all models
                     // We do this because some models connect to other
                     // so we need to wait until we've processed that model
                     while (merged.Count < models.Count)
                     {
+                        var progressed = false;
+
                         foreach (var model in models)
                         {
                             // Check if we've processed, also considers root as it's added to merged
                             if (merged.Contains(model))
                                 continue;
-                            // If we have a model that doesn't exist, and can be connected, we must wait 
+                            // If we have a model that doesn't exist, and can be connected, we must wait
                             // for it's parent model to be connected
-                            if (!rootModel.HasBone(model.Bones[0].Name) && CanBeConnected(model, models))
+                            if (model.Bones.Count > 0 && !rootModel.HasBone(model.Bones[0].Name) && CanBeConnected(model, models))
                                 continue;
                             // Add to the group
                             merged.Add(model);
+                            MergeModel(rootModel, model, logger);
+                            progressed = true;
+                        }
 
-                            Printer.WriteLine("MERGER", string.Format("Merging {0}", model.Name));
-                            logger.Write(string.Format("Merging {0}", model.Name), Logger.MessageType.INFO);
-
-                            foreach (var bone in model.Bones)
-                            {
-                                if (!rootModel.HasBone(bone.Name))
-                                {
-                                    var nBone = new Model.Bone(bone.Name, bone.ParentIndex, bone.LocalPosition, bone.LocalRotation);
-
-                                    if (bone.ParentIndex > -1)
-                                    {
-                                        nBone.ParentIndex = rootModel.Bones.FindIndex(x => x.Name == model.Bones[nBone.ParentIndex].Name);
-                                    }
-
-                                    rootModel.Bones.Add(nBone);
-                                }
-                            }
-
-                            foreach (var shape in model.Shapes)
-                            {
-                                if(!rootModel.Shapes.Contains(shape))
-                                {
-                                    rootModel.Shapes.Add(shape);
-                                }
-                            }
-
-                            // Compute global positions (we need them for offsetting)
-                            rootModel.GenerateGlobalBoneData();
-                            model.GenerateGlobalBoneData();
-
-                            // Get root and the new root, to compute offsets
-                            var root = model.Bones[0];
-                            var nRoot = rootModel.Bones.Find(x => x.Name == root.Name);
-
-                            // TODO: compute this for each bone and utilize weights
-                            // but as an option, as it may cause severe deformations 
-                            // if bones have moved
-                            var translation = nRoot.GlobalPosition - root.GlobalPosition;
-                            var rotation = (nRoot.GlobalRotation * root.GlobalRotation.Inverse()).ToMatrix();
-
-                            foreach (var material in model.Materials)
-                            {
-                                if (rootModel.Materials.Find(x => x.Name == material.Name) == null)
-                                {
-                                    rootModel.Materials.Add(material);
-                                }
-                            }
-
-                            foreach (var mesh in model.Meshes)
-                            {
-                                var nMesh = new Model.Mesh(mesh.Vertices.Count, 0)
-                                {
-                                    Faces = new List<Model.Face>(mesh.Faces)
-                                };
-
-                                foreach (var material in mesh.MaterialIndices)
-                                {
-                                    nMesh.MaterialIndices.Add(rootModel.Materials.FindIndex(x => x.Name == model.Materials[material].Name));
-                                }
-
-                                foreach (var vertex in mesh.Vertices)
-                                {
-                                    var nVertex = new Model.Vertex(vertex.Position, vertex.Normal, vertex.Tangent)
-                                    {
-                                        Color = vertex.Color,
-                                        Weights = new List<Model.Vertex.Weight>(vertex.Weights.Count),
-                                        UVs = new List<Vector2>(vertex.UVs)
-                                    };
-
-                                    foreach (var weight in vertex.Weights)
-                                    {
-                                        nVertex.Weights.Add(new Model.Vertex.Weight(rootModel.Bones.FindIndex(x => x.Name == model.Bones[weight.BoneIndex].Name), weight.Influence));
-                                    }
-
-                                    foreach (var shape in vertex.Shapes)
-                                    {
-                                        nVertex.Shapes.Add(new Model.Vertex.Shape(
-                                            rootModel.Shapes.FindIndex(x => x == model.Shapes[shape.ShapeIndex]),
-                                            rotation.TransformVector(shape.Delta)));
-                                    }
-
-                                    // Now move it to the new position
-                                    nVertex.Position = rotation.TransformVector(vertex.Position);
-                                    nVertex.Normal = rotation.TransformVector(vertex.Normal);
-                                    nVertex.Position += translation;
-
-                                    nMesh.Vertices.Add(nVertex);
-                                }
-
-                                rootModel.Meshes.Add(nMesh);
-                            }
-
-                            Printer.WriteLine("MERGER", string.Format("Merged {0}", model.Name));
-                            logger.Write(string.Format("Merged {0}", model.Name), Logger.MessageType.INFO);
+                        // A full pass with no progress means the remaining models only
+                        // connect to each other, never to the root's hierarchy. Attach
+                        // the first one as-is so the rest can connect through it,
+                        // instead of looping forever
+                        if (!progressed)
+                        {
+                            var stuck = models.First(x => !merged.Contains(x));
+                            Printer.WriteLine("MERGER", string.Format("{0} shares no bones with {1}, attaching without repositioning", stuck.Name, rootModel.Name), ConsoleColor.DarkYellow);
+                            logger.Write(string.Format("{0} shares no bones with {1}, attaching without repositioning", stuck.Name, rootModel.Name), Logger.MessageType.WARNING);
+                            merged.Add(stuck);
+                            MergeModel(rootModel, stuck, logger);
                         }
                     }
 

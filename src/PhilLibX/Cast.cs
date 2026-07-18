@@ -861,7 +861,12 @@ namespace Cast
         {
             if (Properties.TryGetValue("ul", out CastProperty Value))
             {
-                return (int)Value.Values[0];
+                if (Value.Type == "i")
+                    return (int)Value.Values[0];
+                else if (Value.Type == "h")
+                    return unchecked((int)(short)Value.Values[0]);
+                else if (Value.Type == "b")
+                    return unchecked((int)(byte)Value.Values[0]);
             }
 
             return 0;

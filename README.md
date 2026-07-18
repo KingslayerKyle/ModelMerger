@@ -11,9 +11,9 @@ With other formats planned on request or by how many people use it.
 
 PLEASE INSTALL .NET 8 RUNTIME [HERE](https://dotnet.microsoft.com/en-us/download/dotnet/thank-you/runtime-desktop-8.0.20-windows-x64-installer)
 
-Simply drag and drop supported model files onto the tool and it will attempt to merge them together, this includes moving the models to the new origins which makes it useful for weapons and characters exported from games.
+Simply drag and drop supported model files onto the tool and it will attempt to merge them together, this includes moving the models to the new origins which makes it useful for weapons and characters exported from games. The merged model is saved to a `Merged Models` folder next to the dropped files.
 
-The tool will first sort the given models by names, and then attempt to locate the first model that cannot be connected to any other model, if not found, it will use the first model. It is recommended to use models designed to be used with each other i.e. character body + head, weapon parts, etc.
+The tool will first sort the given models by names, and then attempt to locate the first model that cannot be connected to any other model, if not found, it will use the first model. It is recommended to use models designed to be used with each other i.e. character body + head, weapon parts, etc. Models that share no bones with the root model are still merged, without repositioning.
 
 # License
 

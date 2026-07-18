@@ -327,10 +327,13 @@ namespace PhilLibX
                 foreach (var weight in Weights)
                     weightSum += weight.Influence;
 
+                if (weightSum <= 0.0f)
+                    return;
+
                 var multiplier = 1.0f / weightSum;
 
                 foreach (var weight in Weights)
-                    weightSum *= multiplier;
+                    weight.Influence *= multiplier;
             }
         }
 
@@ -816,7 +819,10 @@ namespace PhilLibX
 
                     foreach(var vertex in mesh.Vertices)
                     {
-                        writer.Write(0xFFFFFFFF);
+                        writer.Write((byte)(vertex.Color.X * 255.0f));
+                        writer.Write((byte)(vertex.Color.Y * 255.0f));
+                        writer.Write((byte)(vertex.Color.Z * 255.0f));
+                        writer.Write((byte)(vertex.Color.W * 255.0f));
                     }
 
                     foreach(var vertex in mesh.Vertices)
@@ -1123,9 +1129,13 @@ namespace PhilLibX
                 foreach(var Vertex in submesh.Vertices)
                 {
                     Positions.Write(Vertex.Position);
-                    Colours.Write(0xFFFFFFFF);
+                    Colours.Write(
+                        ((uint)(Vertex.Color.X * 255.0f) & 0xFF) |
+                        (((uint)(Vertex.Color.Y * 255.0f) & 0xFF) << 8) |
+                        (((uint)(Vertex.Color.Z * 255.0f) & 0xFF) << 16) |
+                        (((uint)(Vertex.Color.W * 255.0f) & 0xFF) << 24));
                     Normals.Write(Vertex.Normal);
-                    UVLayer.Write(Vertex.UVs[0]);
+                    UVLayer.Write(Vertex.UVs.Count > 0 ? Vertex.UVs[0] : new Vector2(0, 0));
                     for (int i = 0; i < MaxSkinInfluenceBuffer; i++)
                     {
                         // Write IDs
@@ -1172,7 +1182,8 @@ namespace PhilLibX
                     }
                 }
 
-                Mats.Write(MaterialHashes[submesh.MaterialIndices[0]]);
+                if (submesh.MaterialIndices.Count > 0 && submesh.MaterialIndices[0] > -1)
+                    Mats.Write(MaterialHashes[submesh.MaterialIndices[0]]);
 
                 if (Shapes.Count > 0)
                 {
@@ -1194,9 +1205,11 @@ namespace PhilLibX
                                     blend.AddProperty("vi", FaceIndexType, Vertex.Shapes.Count * sizeof(int));
                                     BlendMap[BlendDeltaPosition.ShapeIndex] = blend;
                                 }
-                                var BlendPos = new Vector3(BlendDeltaPosition.Delta.X,
-                                    BlendDeltaPosition.Delta.Y,
-                                    BlendDeltaPosition.Delta.Z
+                                // Cast expects absolute target positions, deltas are
+                                // this library's internal convention
+                                var BlendPos = new Vector3(Vertex.Position.X + BlendDeltaPosition.Delta.X,
+                                    Vertex.Position.Y + BlendDeltaPosition.Delta.Y,
+                                    Vertex.Position.Z + BlendDeltaPosition.Delta.Z
                                     );
                                 blend.Properties["vp"].Write(BlendPos);
                                 switch (FaceIndexType)
